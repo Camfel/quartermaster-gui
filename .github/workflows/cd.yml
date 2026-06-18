@@ -34,7 +34,7 @@ jobs:
         run: echo "value=v$(cat VERSION)" >> $GITHUB_OUTPUT
 
       - name: Log in to registry
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
