@@ -43,6 +43,8 @@ type containerStatus struct {
 	Running   bool       `json:"running"`
 	PID       uint32     `json:"pid,omitempty"`
 	Healthy   *bool      `json:"healthy,omitempty"`
+	Ports     []string   `json:"ports,omitempty"`
+	Network   string     `json:"network,omitempty"`
 	StartedAt *time.Time `json:"started_at,omitempty"`
 }
 
@@ -73,10 +75,13 @@ func main() {
 	log.Printf("Daemon socket: %s", socketPath)
 
 	funcs := template.FuncMap{
-		"healthBadge": healthBadge,
-		"shortImage":  shortImage,
-		"since":       since,
-		"uptimeFrom":  uptimeFrom,
+		"healthBadge":  healthBadge,
+		"shortImage":   shortImage,
+		"since":        since,
+		"uptimeFrom":   uptimeFrom,
+		"networkBadge": networkBadge,
+		"portList":     portList,
+		"add":          func(a, b int) int { return a + b },
 	}
 
 	// Parse all templates together so named fragments (e.g. "status-fragment")
@@ -87,7 +92,7 @@ func main() {
 
 	mux := http.NewServeMux()
 
-	// Static files (CSS, HTMX)
+	// Static files (CSS, HTMX, favicon)
 	mux.Handle("/static/", http.FileServer(http.FS(staticFS)))
 
 	// Main dashboard page
@@ -97,10 +102,15 @@ func main() {
 			return
 		}
 		status, err := fetchStatus()
-		renderOrError(w, tmpl.Lookup("index.html"), pageData{
+		pd := pageData{
 			Status: status,
+			Theme:  readTheme(r),
 			Error:  func() string { if err != nil { return err.Error() }; return "" }(),
-		})
+		}
+		if status != nil {
+			pd.Stats = computeStats(status)
+		}
+		renderOrError(w, tmpl.Lookup("index.html"), pd)
 	})
 
 	// HTML fragment: status table + watchers (polled by HTMX)
@@ -111,8 +121,25 @@ func main() {
 			w.Write([]byte(`<div class="banner error" hx-swap-oob="true" id="banner-area"><strong>⚠ Daemon unreachable</strong><p>` + err.Error() + `</p></div>`))
 			return
 		}
+
+		// Apply search filter if query parameter present.
+		q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+		if q != "" {
+			filtered := make([]containerStatus, 0, len(status.Containers))
+			for _, c := range status.Containers {
+				if strings.Contains(strings.ToLower(c.Name), q) ||
+					strings.Contains(strings.ToLower(c.Image), q) {
+					filtered = append(filtered, c)
+				}
+			}
+			status.Containers = filtered
+		}
+
 		w.Header().Set("Content-Type", "text/html")
-		tmpl.ExecuteTemplate(w, "status-fragment", status)
+		tmpl.ExecuteTemplate(w, "status-fragment", struct {
+			Status *daemonStatus
+			Stats  statsData
+		}{status, computeStats(status)})
 	})
 
 	// POST /htmx/reconcile — triggers immediate reconciliation
@@ -199,7 +226,12 @@ func main() {
 			return
 		}
 
-		resp, err := daemonClient().Get("http://unix/v1/services/" + name + "/logs?tail=4096")
+		// Use the tail query parameter if provided.
+		tail := r.URL.Query().Get("tail")
+		if tail == "" {
+			tail = "4096"
+		}
+		resp, err := daemonClient().Get("http://unix/v1/services/" + name + "/logs?tail=" + tail)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte(`<pre class="log-content log-error">` + err.Error() + `</pre>`))
@@ -239,6 +271,30 @@ func main() {
 		})
 	})
 
+	// POST /htmx/theme/toggle — flips between light and dark theme.
+	mux.HandleFunc("/htmx/theme/toggle", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		current := readTheme(r)
+		next := "dark"
+		if current == "dark" {
+			next = "light"
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name:     "theme",
+			Value:    next,
+			Path:     "/",
+			MaxAge:   365 * 24 * 3600,
+			SameSite: http.SameSiteLaxMode,
+			HttpOnly: true,
+		})
+		// Reload the page so the <html data-theme> attribute is re-rendered.
+		w.Header().Set("HX-Refresh", "true")
+		w.WriteHeader(http.StatusOK)
+	})
+
 	// Health endpoint
 	mux.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -263,12 +319,38 @@ func main() {
 
 type pageData struct {
 	Status *daemonStatus
+	Stats  statsData
+	Theme  string
+	Query  string
 	Error  string
 }
 
 type detailPageData struct {
 	Service *serviceDetail
 	Status  *daemonStatus
+}
+
+type statsData struct {
+	Running   int
+	Total     int
+	Unhealthy int
+	Reconcile int64
+}
+
+func computeStats(s *daemonStatus) statsData {
+	st := statsData{
+		Total:     len(s.Containers),
+		Reconcile: s.ReconcileCount,
+	}
+	for _, c := range s.Containers {
+		if c.Running {
+			st.Running++
+		}
+		if c.Healthy != nil && !*c.Healthy {
+			st.Unhealthy++
+		}
+	}
+	return st
 }
 
 // ── Daemon client (Unix socket HTTP) ─────────────────────────────────────
@@ -304,18 +386,20 @@ func fetchStatus() (*daemonStatus, error) {
 
 // serviceDetail is the JSON shape returned by /v1/services/<name>.
 type serviceDetail struct {
-	Name          string          `json:"name"`
-	Image         string          `json:"image"`
-	RestartPolicy string          `json:"restart_policy"`
-	Ports         []portDetail    `json:"ports,omitempty"`
-	Volumes       []volumeDetail  `json:"volumes,omitempty"`
-	Env           []envDetail     `json:"env,omitempty"`
-	Secrets       []secretRef     `json:"secrets,omitempty"`
-	Network       string          `json:"network,omitempty"`
-	User          string          `json:"user,omitempty"`
-	DependsOn     []string        `json:"depends_on,omitempty"`
-	HealthCheck   *healthCheck    `json:"healthcheck,omitempty"`
+	Name          string           `json:"name"`
+	Image         string           `json:"image"`
+	RestartPolicy string           `json:"restart_policy"`
+	Ports         []portDetail     `json:"ports,omitempty"`
+	Volumes       []volumeDetail   `json:"volumes,omitempty"`
+	Env           []envDetail      `json:"env,omitempty"`
+	Secrets       []secretRef      `json:"secrets,omitempty"`
+	Network       string           `json:"network,omitempty"`
+	User          string           `json:"user,omitempty"`
+	DependsOn     []string         `json:"depends_on,omitempty"`
+	HealthCheck   *healthCheck     `json:"healthcheck,omitempty"`
 	Resources     *resourcesDetail `json:"resources,omitempty"`
+	Command       []string         `json:"command,omitempty"`
+	Ingress       *ingressConfig   `json:"ingress,omitempty"`
 }
 
 type portDetail struct {
@@ -354,6 +438,12 @@ type resourcesDetail struct {
 type gpuResource struct {
 	Type string `json:"type"`
 	ID   string `json:"id"`
+}
+
+type ingressConfig struct {
+	Host string `json:"host"`
+	Port int    `json:"port"`
+	Auth bool   `json:"auth"`
 }
 
 func fetchService(name string) (*serviceDetail, error) {
@@ -427,6 +517,48 @@ func uptimeFrom(t *time.Time) string {
 	}
 	days := int(d.Hours()) / 24
 	return fmt.Sprintf("%dd%dh", days, int(d.Hours())%24)
+}
+
+// networkBadge returns a coloured pill for the network profile.
+func networkBadge(network string) template.HTML {
+	if network == "" {
+		return ``
+	}
+	class := network
+	switch network {
+	case "public":
+		class = "public"
+	case "internal":
+		class = "internal"
+	case "vpn":
+		class = "vpn"
+	case "host":
+		class = "host"
+	default:
+		return template.HTML(`<span class="network-badge">` + template.HTMLEscapeString(network) + `</span>`)
+	}
+	return template.HTML(`<span class="network-badge ` + class + `">` + template.HTMLEscapeString(network) + `</span>`)
+}
+
+// portList formats a slice of port strings as comma-separated HTML spans.
+func portList(ports []string) template.HTML {
+	if len(ports) == 0 {
+		return `—`
+	}
+	parts := make([]string, len(ports))
+	for i, p := range ports {
+		parts[i] = template.HTMLEscapeString(p)
+	}
+	return template.HTML(strings.Join(parts, ", "))
+}
+
+// readTheme returns the current theme from the cookie, defaulting to "dark".
+func readTheme(r *http.Request) string {
+	c, err := r.Cookie("theme")
+	if err != nil || (c.Value != "light" && c.Value != "dark") {
+		return "dark"
+	}
+	return c.Value
 }
 
 func renderOrError(w http.ResponseWriter, tmpl *template.Template, data interface{}) {

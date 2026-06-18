@@ -1,20 +1,44 @@
 {{/* status-fragment: polled by HTMX every 5s */}}
 {{define "status-fragment"}}
+
+<!-- Stat cards row (updated every poll) -->
+<div class="stat-cards" id="stat-cards">
+  <div class="stat-card running">
+    <div class="value">{{.Stats.Running}}</div>
+    <div class="label">Running</div>
+  </div>
+  <div class="stat-card total">
+    <div class="value">{{.Stats.Total}}</div>
+    <div class="label">Total Services</div>
+  </div>
+  <div class="stat-card unhealthy">
+    <div class="value">{{.Stats.Unhealthy}}</div>
+    <div class="label">Unhealthy</div>
+  </div>
+  <div class="stat-card reconcile">
+    <div class="value">{{.Stats.Reconcile}}</div>
+    <div class="label">Reconciles</div>
+  </div>
+</div>
+
+<!-- Services section -->
 <section>
-  <h2>Services <span class="count">{{len .Containers}}</span></h2>
-  {{if .Containers}}
+
+  {{if .Status.Containers}}
   <table>
     <thead>
       <tr>
         <th>Name</th>
         <th>Image</th>
+        <th>Network</th>
+        <th>Ports</th>
         <th>Status</th>
         <th>Uptime</th>
         <th>Health</th>
       </tr>
     </thead>
     <tbody>
-    {{range .Containers}}
+    {{range .Status.Containers}}
       <tr class="svc-row"
           hx-get="/htmx/service/{{.Name}}"
           hx-target="#detail-panel"
@@ -22,7 +46,15 @@
           hx-indicator="#detail-panel">
         <td class="name">{{.Name}}</td>
         <td class="image" title="{{.Image}}">{{shortImage .Image}}</td>
-        <td>{{if .Running}}<span class="pill up">● running</span>{{else}}<span class="pill down">○ stopped</span>{{end}}</td>
+        <td>{{networkBadge .Network}}</td>
+        <td><span class="ports-list">{{portList .Ports}}</span></td>
+        <td>
+          {{if .Running}}
+            <span class="pill up"><span class="pulse-dot"></span> running</span>
+          {{else}}
+            <span class="pill down"><span class="pulse-dot stopped"></span> stopped</span>
+          {{end}}
+        </td>
         <td>{{if .Running}}{{uptimeFrom .StartedAt}}{{else}}—{{end}}</td>
         <td>{{healthBadge .Healthy}}</td>
       </tr>
@@ -33,4 +65,30 @@
   <p class="empty">No services managed yet.</p>
   {{end}}
 </section>
+
+<!-- Watchers section -->
+{{if .Status.Watchers}}
+<section>
+  <h2>Git Watchers <span class="count">{{len .Status.Watchers}}</span></h2>
+  {{range .Status.Watchers}}
+  <div class="watcher-card">
+    <div class="watcher-info">
+      <span class="repo-url">{{.RepoURL}}</span>
+      <span class="repo-meta">{{if .Branch}}branch: {{.Branch}}{{else}}default{{end}}</span>
+    </div>
+    <div class="watcher-status">
+      {{if .LastHash}}
+        Last seen: <span class="hash">{{.LastHash}}</span>
+      {{else}}
+        <span class="dim">No commits seen yet</span>
+      {{end}}
+      {{if .LastPoll}}
+        <br><span class="dim">{{since .LastPoll}}</span>
+      {{end}}
+    </div>
+  </div>
+  {{end}}
+</section>
+{{end}}
+
 {{end}}
