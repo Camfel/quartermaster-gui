@@ -1,30 +1,52 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en"{{if .Theme}} data-theme="{{.Theme}}"{{end}}>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Quartermaster Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
 <link rel="stylesheet" href="/static/style.css">
 <script src="/static/htmx.min.js"></script>
 </head>
 <body>
+<!-- Keyboard shortcut: R to reconcile -->
+<div hx-post="/htmx/reconcile"
+     hx-trigger="keydown[key=='r' && !ctrlKey && !altKey && !metaKey] from:body"
+     hx-swap="none"
+     hidden></div>
+<!-- Keyboard shortcut: T to toggle theme -->
+<div hx-post="/htmx/theme/toggle"
+     hx-trigger="keydown[key=='t' && !ctrlKey && !altKey && !metaKey] from:body"
+     hx-swap="none"
+     hidden></div>
 <header>
   <div class="brand">
     <h1>⚓ Quartermaster</h1>
     <span class="version">Daemon {{if .Status}}{{.Status.Version}}{{else}}—{{end}}</span>
   </div>
-  {{if .Status}}
-  <div class="meta">
-    <span class="stat">Daemon uptime: {{.Status.Uptime}}</span>
-    {{if .Status.LastReconcile}}
-    <span class="stat dim">Last reconcile: {{since .Status.LastReconcile}}</span>
+  <div class="header-right">
+    {{if .Status}}
+    <div class="meta">
+      <span class="stat">Uptime: {{.Status.Uptime}}</span>
+      {{if .Status.LastReconcile}}
+      <span class="stat"><span class="dim">Last reconcile:</span> {{since .Status.LastReconcile}}</span>
+      {{end}}
+      <button class="btn-reconcile"
+              hx-post="/htmx/reconcile"
+              hx-swap="none"
+              title="Force immediate reconciliation (shortcut: R)">
+        ↻ Reconcile
+      </button>
+    </div>
     {{end}}
-    <button class="btn-reconcile"
-            hx-post="/htmx/reconcile"
+    <button class="theme-toggle"
+            hx-post="/htmx/theme/toggle"
             hx-swap="none"
-            title="Force immediate reconciliation">↻ Reconcile</button>
+            title="Toggle light/dark theme"
+            aria-label="Toggle theme">
+      {{if eq .Theme "light"}}☀{{else}}☾{{end}}
+    </button>
   </div>
-  {{end}}
 </header>
 
 <main>
@@ -43,12 +65,29 @@
   <div id="banner-area"></div>
   {{end}}
 
-  <!-- Status panel: initially rendered server-side, then polled by HTMX -->
+  <!-- Search bar (outside status panel so it persists across poll refreshes) -->
+  <div class="section-header">
+    <h2>Services <span class="count">{{if .Status}}{{len .Status.Containers}}{{else}}0{{end}}</span></h2>
+    <input type="search"
+           class="search-input"
+           name="q"
+           placeholder="Filter services..."
+           hx-get="/htmx/status"
+           hx-trigger="keyup changed delay:200ms"
+           hx-target="#status-panel"
+           hx-swap="outerHTML"
+           hx-include="[name='q']"
+           value="{{.Query}}"
+           autocomplete="off">
+  </div>
+
+  <!-- Status panel: initially rendered server-side, then polled by HTMX.
+       Includes stat cards + services table + watchers. -->
   <div id="status-panel"
        hx-get="/htmx/status"
        hx-trigger="every 5s"
        hx-swap="outerHTML">
-    {{template "status-fragment" .Status}}
+    {{template "status-fragment" .}}
   </div>
 
   <!-- Detail panel: populated by HTMX on service row click -->
@@ -80,7 +119,8 @@
 
 <footer>
   <span>Quartermaster Dashboard</span>
-  <span class="dim">Live updates via HTMX</span>
+  <span class="dim">Live updates via HTMX · <kbd>R</kbd> to reconcile · <kbd>/</kbd> to search</span>
 </footer>
+
 </body>
 </html>

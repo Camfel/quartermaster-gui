@@ -55,6 +55,20 @@
       <dt>Depends on</dt>
       <dd>{{range $i, $d := .Service.DependsOn}}{{if $i}}, {{end}}<span class="tag">{{$d}}</span>{{end}}</dd>
       {{end}}
+
+      {{if .Service.Ingress}}
+      <dt>Ingress</dt>
+      <dd class="ingress-badge">
+        <span class="host">{{.Service.Ingress.Host}}</span>
+        <span class="port">:{{.Service.Ingress.Port}}</span>
+        {{if .Service.Ingress.Auth}}<span class="auth"> 🔒 auth</span>{{end}}
+      </dd>
+      {{end}}
+
+      {{if .Service.Command}}
+      <dt>Command</dt>
+      <dd><div class="cmd-list">{{range $i, $c := .Service.Command}}<span>$</span> {{$c}}{{if not (eq (add $i 1) (len $.Service.Command))}}<br>{{end}}{{end}}</div></dd>
+      {{end}}
     </dl>
 
     {{if .Service.Ports}}
@@ -166,6 +180,7 @@
   <!-- Logs tab -->
   <div id="tab-logs" class="tab-panel" hidden>
     <div class="log-viewer"
+         id="log-container"
          hx-get="/htmx/logs/{{.Service.Name}}"
          hx-trigger="every 2s"
          hx-swap="innerHTML">
