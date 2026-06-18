@@ -1,0 +1,195 @@
+{{/* service-detail: loaded by HTMX on service row click */}}
+{{define "service-detail"}}
+{{if .Service}}
+<section class="svc-detail">
+  <div class="detail-header">
+    <h2>{{.Service.Name}}</h2>
+    <div class="detail-actions">
+      <button class="btn-restart"
+              hx-post="/htmx/restart/{{.Service.Name}}"
+              hx-target="#detail-panel"
+              hx-swap="innerHTML"
+              hx-confirm="Restart {{.Service.Name}}? The container will be stopped and redeployed."
+              aria-label="Restart">↻ Restart</button>
+      <button class="btn-close"
+              hx-on:click="document.getElementById('detail-panel').innerHTML=''"
+              aria-label="Close">✕</button>
+    </div>
+  </div>
+
+  <div class="tabs" role="tablist">
+    <button class="tab active" role="tab"
+            hx-on:click="this.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');this.closest('.svc-detail').querySelectorAll('.tab-panel').forEach(p=>p.hidden=true);this.closest('.svc-detail').querySelector('#tab-config').hidden=false">
+      Config
+    </button>
+    <button class="tab" role="tab"
+            hx-on:click="this.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');this.closest('.svc-detail').querySelectorAll('.tab-panel').forEach(p=>p.hidden=true);this.closest('.svc-detail').querySelector('#tab-health').hidden=false">
+      Health
+    </button>
+    <button class="tab" role="tab"
+            hx-on:click="this.parentElement.querySelectorAll('.tab').forEach(t=>t.classList.remove('active'));this.classList.add('active');this.closest('.svc-detail').querySelectorAll('.tab-panel').forEach(p=>p.hidden=true);this.closest('.svc-detail').querySelector('#tab-logs').hidden=false">
+      Logs
+    </button>
+  </div>
+
+  <!-- Config tab -->
+  <div id="tab-config" class="tab-panel">
+    <dl class="kv-list">
+      <dt>Image</dt>
+      <dd><code>{{.Service.Image}}</code></dd>
+
+      <dt>Restart</dt>
+      <dd>{{.Service.RestartPolicy}}</dd>
+
+      {{if .Service.Network}}
+      <dt>Network</dt>
+      <dd>{{.Service.Network}}</dd>
+      {{end}}
+
+      {{if .Service.User}}
+      <dt>User</dt>
+      <dd>{{.Service.User}}</dd>
+      {{end}}
+
+      {{if .Service.DependsOn}}
+      <dt>Depends on</dt>
+      <dd>{{range $i, $d := .Service.DependsOn}}{{if $i}}, {{end}}<span class="tag">{{$d}}</span>{{end}}</dd>
+      {{end}}
+    </dl>
+
+    {{if .Service.Ports}}
+    <h3>Ports</h3>
+    <table class="mini-table">
+      <thead><tr><th>Host</th><th>Container</th><th>Protocol</th></tr></thead>
+      <tbody>
+      {{range .Service.Ports}}
+        <tr>
+          <td>{{.Host}}</td>
+          <td>{{.Container}}</td>
+          <td>{{if .Protocol}}{{.Protocol}}{{else}}tcp{{end}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+
+    {{if .Service.Volumes}}
+    <h3>Volumes</h3>
+    <table class="mini-table">
+      <thead><tr><th>Source</th><th>Target</th><th>Type</th></tr></thead>
+      <tbody>
+      {{range .Service.Volumes}}
+        <tr>
+          <td class="path">{{.Source}}</td>
+          <td class="path">{{.Target}}</td>
+          <td>{{.Type}}</td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+
+    {{if .Service.Env}}
+    <h3>Environment</h3>
+    <table class="mini-table">
+      <thead><tr><th>Name</th><th>Value</th></tr></thead>
+      <tbody>
+      {{range .Service.Env}}
+        <tr>
+          <td><code>{{.Name}}</code></td>
+          <td><code>{{.Value}}</code></td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+
+    {{if .Service.Secrets}}
+    <h3>Secrets</h3>
+    <table class="mini-table">
+      <thead><tr><th>Name</th><th>Ref</th></tr></thead>
+      <tbody>
+      {{range .Service.Secrets}}
+        <tr>
+          <td>{{.Name}}</td>
+          <td><code>{{.SecretRef}}</code></td>
+        </tr>
+      {{end}}
+      </tbody>
+    </table>
+    {{end}}
+
+    {{if .Service.Resources}}
+    <h3>Resources</h3>
+    <dl class="kv-list">
+    {{if .Service.Resources.GPU}}
+      <dt>GPU</dt>
+      <dd>{{.Service.Resources.GPU.Type}} / {{.Service.Resources.GPU.ID}}</dd>
+    {{end}}
+    </dl>
+    {{end}}
+  </div>
+
+  <!-- Health tab -->
+  <div id="tab-health" class="tab-panel" hidden>
+    {{if .Service.HealthCheck}}
+    <dl class="kv-list">
+      <dt>Type</dt>
+      <dd>{{.Service.HealthCheck.Type}}</dd>
+      <dt>Interval</dt>
+      <dd>{{.Service.HealthCheck.Interval}}</dd>
+      {{if .Service.HealthCheck.Path}}
+      <dt>Path</dt>
+      <dd><code>{{.Service.HealthCheck.Path}}</code></dd>
+      {{end}}
+      {{if .Service.HealthCheck.Port}}
+      <dt>Port</dt>
+      <dd>{{.Service.HealthCheck.Port}}</dd>
+      {{end}}
+    </dl>
+
+    {{if .Status}}
+    {{range .Status.Containers}}
+      {{if eq .Name $.Service.Name}}
+      <div class="health-status">
+        <span class="label">Current:</span>
+        {{healthBadge .Healthy}}
+      </div>
+      {{end}}
+    {{end}}
+    {{end}}
+    {{else}}
+    <p class="empty">No health check configured for this service.</p>
+    {{end}}
+  </div>
+
+  <!-- Logs tab -->
+  <div id="tab-logs" class="tab-panel" hidden>
+    <div class="log-viewer"
+         hx-get="/htmx/logs/{{.Service.Name}}"
+         hx-trigger="every 2s"
+         hx-swap="innerHTML">
+      <pre class="log-content">Loading logs...</pre>
+    </div>
+    <script>
+      (function() {
+        var panel = document.getElementById('tab-logs');
+        var wasAtBottom = false;
+        panel.addEventListener('htmx:beforeSwap', function(e) {
+          var pre = panel.querySelector('.log-content');
+          if (pre) {
+            wasAtBottom = pre.scrollHeight - pre.scrollTop - pre.clientHeight < 50;
+          }
+        });
+        panel.addEventListener('htmx:afterSettle', function() {
+          var pre = panel.querySelector('.log-content');
+          if (pre && wasAtBottom) {
+            pre.scrollTop = pre.scrollHeight;
+          }
+        });
+      })();
+    </script>
+  </div>
+</section>
+{{end}}
+{{end}}

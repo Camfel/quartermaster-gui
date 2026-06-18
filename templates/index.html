@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Quartermaster Dashboard</title>
+<link rel="stylesheet" href="/static/style.css">
+<script src="/static/htmx.min.js"></script>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <h1>⚓ Quartermaster</h1>
+    <span class="version">Daemon {{if .Status}}{{.Status.Version}}{{else}}—{{end}}</span>
+  </div>
+  {{if .Status}}
+  <div class="meta">
+    <span class="stat">Daemon uptime: {{.Status.Uptime}}</span>
+    {{if .Status.LastReconcile}}
+    <span class="stat dim">Last reconcile: {{since .Status.LastReconcile}}</span>
+    {{end}}
+    <button class="btn-reconcile"
+            hx-post="/htmx/reconcile"
+            hx-swap="none"
+            title="Force immediate reconciliation">↻ Reconcile</button>
+  </div>
+  {{end}}
+</header>
+
+<main>
+{{if .Error}}
+  <div id="banner-area" class="banner error">
+    <strong>⚠ Daemon unreachable</strong>
+    <p>{{.Error}}</p>
+    <p class="dim">Socket: /run/quartermaster/daemon.sock &mdash; retrying every 5s</p>
+  </div>
+{{else if .Status}}
+  {{if .Status.LastReconcileError}}
+  <div id="banner-area" class="banner warn">
+    <strong>⚠ Last reconcile failed:</strong> {{.Status.LastReconcileError}}
+  </div>
+  {{else}}
+  <div id="banner-area"></div>
+  {{end}}
+
+  <!-- Status panel: initially rendered server-side, then polled by HTMX -->
+  <div id="status-panel"
+       hx-get="/htmx/status"
+       hx-trigger="every 5s"
+       hx-swap="outerHTML">
+    {{template "status-fragment" .Status}}
+  </div>
+
+  <!-- Detail panel: populated by HTMX on service row click -->
+  <div id="detail-panel" class="detail-panel"></div>
+
+  {{if not .Status.LKGHealthy}}
+  <div class="banner warn">
+    <strong>⚠ LKG rollback active:</strong> {{.Status.LKGError}}
+  </div>
+  {{end}}
+
+  <!-- ConfigMap form -->
+  <section>
+    <h2>ConfigMaps</h2>
+    <form class="cm-form"
+          hx-post="/htmx/configmap"
+          hx-target="#cm-result"
+          hx-swap="innerHTML">
+      <input type="text" name="name" placeholder="configmap name" required>
+      <input type="text" name="key" placeholder="key">
+      <input type="text" name="value" placeholder="value">
+      <button class="btn-reconcile" type="submit">Save</button>
+    </form>
+    <div id="cm-result"></div>
+  </section>
+
+{{end}}
+</main>
+
+<footer>
+  <span>Quartermaster Dashboard</span>
+  <span class="dim">Live updates via HTMX</span>
+</footer>
+</body>
+</html>

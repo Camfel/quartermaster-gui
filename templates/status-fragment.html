@@ -1,0 +1,36 @@
+{{/* status-fragment: polled by HTMX every 5s */}}
+{{define "status-fragment"}}
+<section>
+  <h2>Services <span class="count">{{len .Containers}}</span></h2>
+  {{if .Containers}}
+  <table>
+    <thead>
+      <tr>
+        <th>Name</th>
+        <th>Image</th>
+        <th>Status</th>
+        <th>Uptime</th>
+        <th>Health</th>
+      </tr>
+    </thead>
+    <tbody>
+    {{range .Containers}}
+      <tr class="svc-row"
+          hx-get="/htmx/service/{{.Name}}"
+          hx-target="#detail-panel"
+          hx-swap="innerHTML"
+          hx-indicator="#detail-panel">
+        <td class="name">{{.Name}}</td>
+        <td class="image" title="{{.Image}}">{{shortImage .Image}}</td>
+        <td>{{if .Running}}<span class="pill up">● running</span>{{else}}<span class="pill down">○ stopped</span>{{end}}</td>
+        <td>{{if .Running}}{{uptimeFrom .StartedAt}}{{else}}—{{end}}</td>
+        <td>{{healthBadge .Healthy}}</td>
+      </tr>
+    {{end}}
+    </tbody>
+  </table>
+  {{else}}
+  <p class="empty">No services managed yet.</p>
+  {{end}}
+</section>
+{{end}}
