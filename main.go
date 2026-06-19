@@ -16,6 +16,9 @@ import (
 	"time"
 )
 
+// version is set at build time via -ldflags.  Defaults to "dev" for local builds.
+var version = "dev"
+
 //go:embed templates/*
 var templatesFS embed.FS
 
@@ -71,7 +74,7 @@ func envOrDefault(key, def string) string {
 
 func main() {
 	log.SetFlags(0)
-	log.Printf("Quartermaster GUI starting on %s", listenAddr)
+	log.Printf("Quartermaster GUI v%s starting on %s", version, listenAddr)
 	log.Printf("Daemon socket: %s", socketPath)
 
 	funcs := template.FuncMap{
@@ -105,7 +108,12 @@ func main() {
 		pd := pageData{
 			Status: status,
 			Theme:  readTheme(r),
-			Error:  func() string { if err != nil { return err.Error() }; return "" }(),
+			Error: func() string {
+				if err != nil {
+					return err.Error()
+				}
+				return ""
+			}(),
 		}
 		if status != nil {
 			pd.Stats = computeStats(status)
