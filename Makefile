@@ -8,6 +8,8 @@
 IMAGE      ?= ghcr.io/camfel/quartermaster-gui
 TAG        ?= latest
 BIN        ?= bin/quartermaster-gui
+VERSION    ?= $(shell cat VERSION 2>/dev/null || echo dev)
+LDFLAGS    ?= -s -w -X main.version=$(VERSION)
 
 # ── Test ─────────────────────────────────────────────────────────────────
 test: fmt vet
@@ -16,13 +18,13 @@ test: fmt vet
 # ── CI build (binary only, no container) ─────────────────────────────────
 ci-build: fmt vet test
 	@mkdir -p bin
-	CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o $(BIN) .
-	@echo "✓ Binary: $(BIN)"
+	CGO_ENABLED=0 go build -trimpath -ldflags="$(LDFLAGS)" -o $(BIN) .
+	@echo "✓ Binary: $(BIN) (v$(VERSION))"
 
 # ── CD build (container image) ───────────────────────────────────────────
 cd-build:
-	docker build -t $(IMAGE):$(TAG) .
-	@echo "✓ Image: $(IMAGE):$(TAG)"
+	docker build --build-arg VERSION=$(VERSION) -t $(IMAGE):$(TAG) .
+	@echo "✓ Image: $(IMAGE):$(TAG) (v$(VERSION))"
 
 # ── Utilities ────────────────────────────────────────────────────────────
 fmt:
