@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -44,5 +46,89 @@ func TestSince(t *testing.T) {
 	// nil time
 	if since(nil) != "never" {
 		t.Errorf("since(nil) = %q, want %q", since(nil), "never")
+	}
+}
+
+func TestValidServiceName(t *testing.T) {
+	good := []string{"sonarr", "golf-super-coach", "node_exporter", "a", "svc.1", "UPPER-case"}
+	for _, n := range good {
+		if !validServiceName(n) {
+			t.Errorf("validServiceName(%q) = false, want true", n)
+		}
+	}
+	// Rejected: path traversal, separators, spaces, HTML, empty.
+	bad := []string{"", "..", "../etc", "a/b", "a b", "<script>", "a\x00b", "-leading"}
+	for _, n := range bad {
+		if validServiceName(n) {
+			t.Errorf("validServiceName(%q) = true, want false", n)
+		}
+	}
+}
+
+func TestRequireSameOrigin(t *testing.T) {
+	mk := func(hdr map[string]string) *http.Request {
+		r := httptest.NewRequest(http.MethodPost, "http://dash.boon.blue/htmx/reconcile", nil)
+		for k, v := range hdr {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+
+	// Allowed: same-origin browser request, and header-less non-browser clients.
+	allowed := []map[string]string{
+		{},
+		{"Sec-Fetch-Site": "same-origin"},
+		{"Sec-Fetch-Site": "none"},
+		{"Origin": "http://dash.boon.blue"},
+		{"Referer": "http://dash.boon.blue/"},
+	}
+	for _, h := range allowed {
+		if err := requireSameOrigin(mk(h)); err != nil {
+			t.Errorf("headers %v rejected, want allowed: %v", h, err)
+		}
+	}
+
+	// Rejected: cross-site browser requests.
+	blocked := []map[string]string{
+		{"Sec-Fetch-Site": "cross-site"},
+		{"Sec-Fetch-Site": "same-site"},
+		{"Origin": "https://evil.example"},
+		{"Referer": "https://evil.example/page"},
+	}
+	for _, h := range blocked {
+		if err := requireSameOrigin(mk(h)); err == nil {
+			t.Errorf("headers %v allowed, want rejected", h)
+		}
+	}
+}
+
+func TestGuardPost(t *testing.T) {
+	// GET is refused with 405.
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "http://dash.boon.blue/htmx/reconcile", nil)
+	if guardPost(rec, req) {
+		t.Fatal("guardPost allowed a GET")
+	}
+	if rec.Code != http.StatusMethodNotAllowed {
+		t.Errorf("GET status = %d, want %d", rec.Code, http.StatusMethodNotAllowed)
+	}
+
+	// Cross-origin POST is refused with 403.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "http://dash.boon.blue/htmx/reconcile", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	if guardPost(rec, req) {
+		t.Fatal("guardPost allowed a cross-origin POST")
+	}
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("cross-origin status = %d, want %d", rec.Code, http.StatusForbidden)
+	}
+
+	// Same-origin POST is allowed through.
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "http://dash.boon.blue/htmx/reconcile", nil)
+	req.Header.Set("Sec-Fetch-Site", "same-origin")
+	if !guardPost(rec, req) {
+		t.Fatal("guardPost rejected a same-origin POST")
 	}
 }
