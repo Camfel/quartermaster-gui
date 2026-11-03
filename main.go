@@ -11,7 +11,9 @@ import (
 	"log"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -63,6 +65,15 @@ type watcherStatus struct {
 var (
 	socketPath = envOrDefault("QM_SOCKET", "/run/quartermaster/daemon.sock")
 	listenAddr = envOrDefault("QM_LISTEN", ":8090")
+)
+
+// These names are interpolated into daemon URLs, so they must not contain path
+// separators, traversal sequences, or characters that need escaping.
+var (
+	serviceNameRe   = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	configMapNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+	configMapKeyRe  = regexp.MustCompile(`^[A-Za-z0-9._-]{1,253}$`)
+	tailRe          = regexp.MustCompile(`^[0-9]{1,7}$`)
 )
 
 func envOrDefault(key, def string) string {
@@ -126,7 +137,7 @@ func main() {
 		status, err := fetchStatus()
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<div class="banner error" hx-swap-oob="true" id="banner-area"><strong>⚠ Daemon unreachable</strong><p>` + err.Error() + `</p></div>`))
+			w.Write([]byte(`<div class="banner error" hx-swap-oob="true" id="banner-area"><strong>⚠ Daemon unreachable</strong><p>` + template.HTMLEscapeString(err.Error()) + `</p></div>`))
 			return
 		}
 
@@ -152,11 +163,10 @@ func main() {
 
 	// POST /htmx/reconcile — triggers immediate reconciliation
 	mux.HandleFunc("/htmx/reconcile", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+		if !guardPost(w, r) {
 			return
 		}
-		resp, err := daemonClient().Post("http://unix/v1/reconcile", "application/json", nil)
+		resp, err := daemonClient(0).Post("http://unix/v1/reconcile", "application/json", nil)
 		if err != nil {
 			w.WriteHeader(http.StatusBadGateway)
 			return
@@ -167,8 +177,7 @@ func main() {
 
 	// POST /htmx/configmap — creates/updates a ConfigMap via daemon
 	mux.HandleFunc("/htmx/configmap", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+		if !guardPost(w, r) {
 			return
 		}
 		if err := r.ParseForm(); err != nil {
@@ -182,67 +191,79 @@ func main() {
 			w.Write([]byte(`<span class="dim">All fields required</span>`))
 			return
 		}
+		if !configMapNameRe.MatchString(name) {
+			w.Write([]byte(`<span class="dim">Invalid ConfigMap name</span>`))
+			return
+		}
+		if !configMapKeyRe.MatchString(key) {
+			w.Write([]byte(`<span class="dim">Invalid ConfigMap key</span>`))
+			return
+		}
 
 		body, _ := json.Marshal(map[string]interface{}{"data": map[string]string{key: value}})
-		resp, err := daemonClient().Post("http://unix/v1/configmaps/"+name, "application/json", bytes.NewReader(body))
+		resp, err := daemonClient(0).Post("http://unix/v1/configmaps/"+name, "application/json", bytes.NewReader(body))
 		if err != nil {
-			w.Write([]byte(`<span class="dim" style="color:var(--red)">Error: ` + err.Error() + `</span>`))
+			w.Write([]byte(`<span class="dim" style="color:var(--red)">Error: ` + template.HTMLEscapeString(err.Error()) + `</span>`))
 			return
 		}
 		defer resp.Body.Close()
 
 		// Trigger reconcile so the new ConfigMap is picked up.
-		daemonClient().Post("http://unix/v1/reconcile", "application/json", nil)
+		daemonClient(0).Post("http://unix/v1/reconcile", "application/json", nil)
 
-		w.Write([]byte(`<span style="color:var(--green)">✓ ConfigMap "` + name + `" updated (` + key + `=` + value + `)</span>`))
+		// Echo back only what the operator typed for name/key; the value is
+		// deliberately not reflected.
+		w.Write([]byte(`<span style="color:var(--green)">✓ ConfigMap "` + template.HTMLEscapeString(name) + `" updated (` + template.HTMLEscapeString(key) + `)</span>`))
 	})
 
 	// HTML fragment: restart a service via the daemon, then reload the panel
 	mux.HandleFunc("/htmx/restart/", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+		if !guardPost(w, r) {
 			return
 		}
 		name := strings.TrimPrefix(r.URL.Path, "/htmx/restart/")
-		if name == "" || strings.Contains(name, "/") {
+		if !validServiceName(name) {
 			http.Error(w, "bad service name", 400)
 			return
 		}
 
 		// Use a longer timeout — restart does stop + wait + kill + delete.
-		rc := daemonClient()
-		rc.Timeout = 30 * time.Second
-		resp, err := rc.Post("http://unix/v1/services/"+name+"/restart", "application/json", nil)
+		resp, err := daemonClient(30*time.Second).Post("http://unix/v1/services/"+name+"/restart", "application/json", nil)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<div class="banner error"><strong>⚠ Restart failed</strong><p>` + err.Error() + `</p></div>`))
+			w.Write([]byte(`<div class="banner error"><strong>⚠ Restart failed</strong><p>` + template.HTMLEscapeString(err.Error()) + `</p></div>`))
 			return
 		}
 		defer resp.Body.Close()
 
 		// Reload the detail panel after a short delay (container takes a moment to come back).
+		safeName := template.HTMLEscapeString(name)
 		w.Header().Set("Content-Type", "text/html")
-		w.Write([]byte(`<div class="banner" style="border-color: ` + "var(--blue)" + `; color: ` + "var(--blue)" + `; background: rgba(88,166,255,0.08);"><strong>↻ Restarting ` + name + `...</strong><p>Container stopped. Redeploying — detail will refresh in 5s.</p></div>`))
-		w.Write([]byte(`<div hx-get="/htmx/service/` + name + `" hx-trigger="load delay:5s" hx-target="#detail-panel" hx-swap="innerHTML"></div>`))
+		w.Write([]byte(`<div class="banner" style="border-color: ` + "var(--blue)" + `; color: ` + "var(--blue)" + `; background: rgba(88,166,255,0.08);"><strong>↻ Restarting ` + safeName + `...</strong><p>Container stopped. Redeploying — detail will refresh in 5s.</p></div>`))
+		w.Write([]byte(`<div hx-get="/htmx/service/` + safeName + `" hx-trigger="load delay:5s" hx-target="#detail-panel" hx-swap="innerHTML"></div>`))
 	})
 
 	// HTML fragment: log viewer (polled by HTMX every 2s)
 	mux.HandleFunc("/htmx/logs/", func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/htmx/logs/")
-		if name == "" || strings.Contains(name, "/") {
+		if !validServiceName(name) {
 			http.Error(w, "bad service name", 400)
 			return
 		}
 
-		// Use the tail query parameter if provided.
+		// Use the tail query parameter if provided, but only if it is purely
+		// numeric — otherwise it could inject extra daemon query parameters.
 		tail := r.URL.Query().Get("tail")
 		if tail == "" {
 			tail = "4096"
 		}
-		resp, err := daemonClient().Get("http://unix/v1/services/" + name + "/logs?tail=" + tail)
+		if !tailRe.MatchString(tail) {
+			tail = "4096"
+		}
+		resp, err := daemonClient(0).Get("http://unix/v1/services/" + name + "/logs?tail=" + tail)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<pre class="log-content log-error">` + err.Error() + `</pre>`))
+			w.Write([]byte(`<pre class="log-content log-error">` + template.HTMLEscapeString(err.Error()) + `</pre>`))
 			return
 		}
 		defer resp.Body.Close()
@@ -257,7 +278,7 @@ func main() {
 	// HTML fragment: service detail panel (loaded on click)
 	mux.HandleFunc("/htmx/service/", func(w http.ResponseWriter, r *http.Request) {
 		name := strings.TrimPrefix(r.URL.Path, "/htmx/service/")
-		if name == "" || strings.Contains(name, "/") {
+		if !validServiceName(name) {
 			http.Error(w, "bad service name", 400)
 			return
 		}
@@ -265,7 +286,7 @@ func main() {
 		svc, err := fetchService(name)
 		if err != nil {
 			w.Header().Set("Content-Type", "text/html")
-			w.Write([]byte(`<div class="banner error"><strong>⚠ Error</strong><p>` + err.Error() + `</p></div>`))
+			w.Write([]byte(`<div class="banner error"><strong>⚠ Error</strong><p>` + template.HTMLEscapeString(err.Error()) + `</p></div>`))
 			return
 		}
 
@@ -281,8 +302,7 @@ func main() {
 
 	// POST /htmx/theme/toggle — flips between light and dark theme.
 	mux.HandleFunc("/htmx/theme/toggle", func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodPost {
-			http.Error(w, "method not allowed", 405)
+		if !guardPost(w, r) {
 			return
 		}
 		current := readTheme(r)
@@ -310,11 +330,12 @@ func main() {
 	})
 
 	srv := &http.Server{
-		Addr:         listenAddr,
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Addr:              listenAddr,
+		Handler:           mux,
+		ReadHeaderTimeout: 10 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      15 * time.Second,
+		IdleTimeout:       60 * time.Second,
 	}
 
 	log.Printf("GUI ready → http://localhost%s", listenAddr)
@@ -363,19 +384,73 @@ func computeStats(s *daemonStatus) statsData {
 
 // ── Daemon client (Unix socket HTTP) ─────────────────────────────────────
 
-func daemonClient() *http.Client {
-	return &http.Client{
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				return net.Dial("unix", socketPath)
-			},
-		},
-		Timeout: 8 * time.Second,
+// daemonTransport is shared across requests so idle connections are reused
+// instead of a fresh transport (and a leaked socket) being built per call.
+var daemonTransport = &http.Transport{
+	DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", socketPath)
+	},
+	MaxIdleConns:    4,
+	IdleConnTimeout: 90 * time.Second,
+}
+
+// daemonClient returns a client bound to the daemon socket. A timeout <= 0
+// selects the 8s default.
+func daemonClient(timeout time.Duration) *http.Client {
+	if timeout <= 0 {
+		timeout = 8 * time.Second
 	}
+	return &http.Client{Transport: daemonTransport, Timeout: timeout}
+}
+
+// validServiceName accepts only names that are safe to place in a daemon URL.
+func validServiceName(name string) bool {
+	return serviceNameRe.MatchString(name) && !strings.Contains(name, "..")
+}
+
+// requireSameOrigin rejects state-changing requests a browser labels as
+// cross-site. Non-browser clients (curl, scripts, health checks) send none of
+// these headers and are allowed through.
+func requireSameOrigin(r *http.Request) error {
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		if site != "same-origin" && site != "none" {
+			return fmt.Errorf("cross-site request rejected")
+		}
+		return nil
+	}
+	if origin := r.Header.Get("Origin"); origin != "" {
+		u, err := url.Parse(origin)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return fmt.Errorf("cross-origin request rejected")
+		}
+		return nil
+	}
+	if ref := r.Referer(); ref != "" {
+		u, err := url.Parse(ref)
+		if err != nil || !strings.EqualFold(u.Host, r.Host) {
+			return fmt.Errorf("cross-origin request rejected")
+		}
+	}
+	return nil
+}
+
+// guardPost enforces POST plus same-origin for state-changing handlers.
+// It writes the response and returns false when the request must be stopped.
+func guardPost(w http.ResponseWriter, r *http.Request) bool {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return false
+	}
+	if err := requireSameOrigin(r); err != nil {
+		http.Error(w, err.Error(), http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 func fetchStatus() (*daemonStatus, error) {
-	resp, err := daemonClient().Get("http://unix/v1/status")
+	resp, err := daemonClient(0).Get("http://unix/v1/status")
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach daemon: %w", err)
 	}
@@ -455,7 +530,7 @@ type ingressConfig struct {
 }
 
 func fetchService(name string) (*serviceDetail, error) {
-	resp, err := daemonClient().Get("http://unix/v1/services/" + name)
+	resp, err := daemonClient(0).Get("http://unix/v1/services/" + name)
 	if err != nil {
 		return nil, fmt.Errorf("cannot reach daemon: %w", err)
 	}
